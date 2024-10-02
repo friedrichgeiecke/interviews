@@ -1,0 +1,7 @@
+[browser]
+# Disable streamlit collecting user statistics, https://streamlit.io/privacy-policy
+gatherUsageStats = false
+
+[client]
+# Minimal appearance of user interface
+toolbarMode = "minimal"
