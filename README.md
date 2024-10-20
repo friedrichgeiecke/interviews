@@ -25,12 +25,13 @@ The interview platform is built using the library `streamlit` and the APIs of Op
 
 ## Paper and citation
 
-The paper is available at ... and can be cited with the following bibtex entry:
+The paper is available at https://ssrn.com/abstract=4974382 and can be cited with the following bibtex entry:
 
 ```
-@misc{geieckejaravel2024,
-  Author = {Friedrich Geiecke and Xavier Jaravel},
-  Title = {Conversations at Scale: Robust AI-led Interviews with a Simple Open-Source Platform},
-  Year = {2024},
+@article{geieckejaravel2024,
+  title={Conversations at Scale: Robust AI-led Interviews with a Simple Open-Source Platform},
+  author={Geiecke, Friedrich and Jaravel, Xavier},
+  url={https://ssrn.com/abstract=4974382},
+  year={2024}
 }
 ```
