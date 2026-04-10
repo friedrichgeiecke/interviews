@@ -14,9 +14,11 @@ import time
 import warnings
 from io import BytesIO
 from copy import deepcopy
+from pathlib import Path
 
 import streamlit as st
 from openai import OpenAI
+from mistralai.client import Mistral
 from scipy.io import wavfile
 
 import config
@@ -168,8 +170,10 @@ with col2:
 # API client
 if config.API == "openai":
     client = OpenAI(api_key=st.secrets["KEY_OPENAI"])
+elif config.API == "mistral":
+    client = Mistral(api_key=st.secrets["KEY_MISTRAL"])
 else:
-    raise ValueError("Only the OpenAI API is currently supported for this interview.")
+    raise ValueError("Only the OpenAI and Mistral API are currently supported for this interview.")
 
 # Initialise API kwargs
 if isinstance(config.ADDITIONAL_API_KWARGS, dict):
@@ -178,10 +182,30 @@ else:
     raise ValueError(
         "ADDITIONAL_API_KWARGS must be specified as a dictionary in config.py, either empty or containing valid additional API parameters."
     )
-api_kwargs["messages"] = st.session_state.messages
-api_kwargs["model"] = config.MODEL
-api_kwargs["modalities"] = ["text", "audio"]
-api_kwargs["audio"] = {"voice": config.VOICE, "format": "wav"}
+
+if config.API == "openai":
+    api_kwargs["messages"] = st.session_state.messages
+    api_kwargs["model"] = config.MODEL
+    api_kwargs["modalities"] = ["text", "audio"]
+    api_kwargs["audio"] = {"voice": config.VOICE, "format": "wav"}
+elif config.API == "mistral":
+    api_kwargs["messages"] = st.session_state.messages
+    api_kwargs["model"] = config.MODEL
+    sample_audio_b64 = base64.b64encode(Path("sample_female.opus").read_bytes()).decode()
+
+
+    if "mistral_voice_id" not in st.session_state:
+        sample_audio_b64 = base64.b64encode(Path("sample_female.opus").read_bytes()).decode()
+        voice = client.audio.voices.create(
+            name="interviewer_voice",
+            sample_audio=sample_audio_b64,
+            sample_filename="sample_female.opus",
+            languages=["en", "fr"],
+            gender="female",
+        )
+
+        st.session_state.mistral_voice_id = voice.id
+
 
 
 #
@@ -195,25 +219,58 @@ transcript_container = st.container()
 # generate the first message
 if not st.session_state.messages and st.session_state.interview_active:
     with transcript_container:
-        st.session_state.messages.append(
-            {"role": "system", "content": config.SYSTEM_PROMPT}
-        )
+        if config.API == "openai":
+            st.session_state.messages.append(
+                {"role": "system", "content": config.SYSTEM_PROMPT}
+            )
+        elif config.API == "mistral":
+            st.session_state.messages.append(
+                {"role": "system",
+                "content":[
+                    {
+                        "type": "text",
+                        "text": config.SYSTEM_PROMPT,
+                    
+                    }
+                ]
+                }
+            )
         with st.chat_message("assistant", avatar=config.AVATAR_INTERVIEWER):
             message_placeholder = st.empty()
             message_placeholder.markdown("Interviewer thinking ...")
 
-            completion_response = client.chat.completions.create(**api_kwargs)
-
-            interviewer_message_audio_api = completion_response.choices[
+            if config.API == "openai":
+                completion_response = client.chat.completions.create(**api_kwargs)
+                interviewer_message_audio_api = completion_response.choices[
                 0
-            ].message.audio.data
-            interviewer_message_id = completion_response.choices[0].message.audio.id
-            interviewer_message_transcript = completion_response.choices[
-                0
-            ].message.audio.transcript
+                ].message.audio.data
 
-            # Transform WAV base64 string to bytes
-            audio_bytes = base64.b64decode(interviewer_message_audio_api)
+                interviewer_message_id = completion_response.choices[0].message.audio.id
+
+                interviewer_message_transcript = completion_response.choices[
+                0
+                ].message.audio.transcript
+                # Transform WAV base64 string to bytes
+                audio_bytes = base64.b64decode(interviewer_message_audio_api)
+                # Path("sample_female.opus").write_bytes(audio_bytes)
+                # Path("sample_female.mp3").write_bytes(audio_bytes)
+
+
+                
+            elif config.API == "mistral":
+              
+                # Chat
+                chat_response = client.chat.complete(**api_kwargs)
+                interviewer_message_transcript=chat_response.choices[0].message.content
+    
+                # text to speech
+                response = client.audio.speech.complete(
+                    model="voxtral-mini-tts-2603",
+                    input=interviewer_message_transcript,
+                    voice_id=st.session_state.mistral_voice_id,
+                    response_format="wav",
+                )
+                audio_bytes=base64.b64decode(response.audio_data)
 
             # Determine duration of WAV
             interviewer_message_duration = get_wav_duration(audio_bytes)
@@ -226,14 +283,22 @@ if not st.session_state.messages and st.session_state.interview_active:
             time.sleep(interviewer_message_duration + 0.5)
             message_placeholder.empty()
             message_placeholder.markdown(interviewer_message_transcript)
-
-    st.session_state.messages.append(
-        {
-            "role": "assistant",
-            "content": interviewer_message_transcript,
-            "audio": {"id": interviewer_message_id},
-        }
-    )
+    if config.API == "openai":
+        st.session_state.messages.append(
+            {
+                "role": "assistant",
+                "content": interviewer_message_transcript,
+                "audio": {"id": interviewer_message_id},
+            }
+        )
+    elif config.API=="mistral":
+        st.session_state.messages.append(
+            {
+                "role": "assistant",
+                "content": interviewer_message_transcript,
+                # "audio": {"id": interviewer_message_id},
+            }
+        )        
 
     # Store interview data up to here to signal it has started
     save_backup(
@@ -287,10 +352,22 @@ if st.session_state.interview_active:
                 transcription_placeholder.markdown("__Processing voice response ...__")
 
                 # Obtain transcription from the audio input
-                user_transcription = client.audio.transcriptions.create(
-                    model=config.MODEL_TRANSCRIPTION,
-                    file=audio_response,
-                ).text
+                if config.API=="openai":
+                    user_transcription = client.audio.transcriptions.create(
+                        model=config.MODEL_TRANSCRIPTION,
+                        file=audio_response,
+                    ).text
+                elif config.API=="mistral":
+                    # speech to text
+                    voice_response={
+                        "content": audio_response.getvalue(),
+                        "file_name": audio_response.name,
+                    }
+
+                    user_transcription =client.audio.transcriptions.complete(
+                                        model=config.MODEL_TRANSCRIPTION,
+                                        file=voice_response,
+                                    ).text
 
                 # Cache transcription in session_state to reuse it on reruns
                 st.session_state.last_transcription = user_transcription
@@ -343,18 +420,35 @@ if st.session_state.interview_active:
                 with st.chat_message("assistant", avatar=config.AVATAR_INTERVIEWER):
                     message_placeholder = st.empty()
                     message_placeholder.markdown("Interviewer thinking ...")
+                    if config.API == "openai":
+                        completion_response = client.chat.completions.create(**api_kwargs)
 
-                    completion_response = client.chat.completions.create(**api_kwargs)
+                        interviewer_message_audio_api = completion_response.choices[
+                            0
+                        ].message.audio.data
+                        interviewer_message_id = completion_response.choices[
+                            0
+                        ].message.audio.id
+                        interviewer_message_transcript = completion_response.choices[
+                            0
+                        ].message.audio.transcript
 
-                    interviewer_message_audio_api = completion_response.choices[
-                        0
-                    ].message.audio.data
-                    interviewer_message_id = completion_response.choices[
-                        0
-                    ].message.audio.id
-                    interviewer_message_transcript = completion_response.choices[
-                        0
-                    ].message.audio.transcript
+                        # Transform WAV base64 string to bytes
+                        audio_bytes = base64.b64decode(interviewer_message_audio_api)
+                    elif config.API == "mistral":
+                        chat_response = client.chat.complete(**api_kwargs)
+           
+                        interviewer_message_transcript=chat_response.choices[0].message.content
+
+                        # text to speech
+                        response = client.audio.speech.complete(
+                        model="voxtral-mini-tts-2603",
+                        input=interviewer_message_transcript,
+                        voice_id=st.session_state.mistral_voice_id,
+                        response_format="wav",
+                        )
+                        audio_bytes=base64.b64decode(response.audio_data)
+
 
                     # Check for any closing codes
                     for code in config.CLOSING_MESSAGES.keys():
@@ -366,15 +460,31 @@ if st.session_state.interview_active:
                             # Generate the pre-written closing message from config.py
                             # with a simple TTS model
                             closing_audio_buffer = BytesIO()
-                            with client.audio.speech.with_streaming_response.create(
-                                model="gpt-4o-mini-tts",
-                                voice=config.VOICE,
-                                input=closing_message,
-                                response_format="wav",
-                                instructions="Please speak slowly to conclude an interview.",
-                            ) as response:
-                                for chunk in response.iter_bytes():
-                                    closing_audio_buffer.write(chunk)
+                            if config.API == "openai":
+                                with client.audio.speech.with_streaming_response.create(
+                                    model="gpt-4o-mini-tts",
+                                    voice=config.VOICE,
+                                    input=closing_message,
+                                    response_format="wav",
+                                    instructions="Please speak slowly to conclude an interview.",
+                                ) as response:
+                                    for chunk in response.iter_bytes():
+                                        closing_audio_buffer.write(chunk)
+                            elif config.API == "mistral":
+                                # text to speech
+                                ref_audio_b64 = base64.b64encode(Path("resultat.mp3").read_bytes()).decode()
+                                audio_chunks = []
+
+                                with client.audio.speech.complete(
+                                    model="voxtral-mini-tts-2603",
+                                    input=closing_message,
+                                    voice_id=st.session_state.mistral_voice_id,
+                                    response_format="wav",
+                                    stream=True,
+                                ) as stream:
+                                    for event in stream:
+                                        closing_audio_buffer.write(base64.b64decode(event.data.audio_data))
+
 
                             closing_audio_bytes = closing_audio_buffer.getvalue()
 
@@ -399,13 +509,22 @@ if st.session_state.interview_active:
                             message_placeholder.markdown(closing_message)
 
                             # Log everything
-                            st.session_state.messages.append(
-                                {
-                                    "role": "assistant",
-                                    "content": interviewer_message_transcript,
-                                    "audio": {"id": interviewer_message_id},
-                                }
-                            )
+                            if config.API == "openai":
+                                st.session_state.messages.append(
+                                    {
+                                        "role": "assistant",
+                                        "content": interviewer_message_transcript,
+                                        "audio": {"id": interviewer_message_id},
+                                    }
+                                )
+                            elif config.API == "mistral":
+                                st.session_state.messages.append(
+                                    {
+                                        "role": "assistant",
+                                        "content": interviewer_message_transcript,
+                                    }
+                                )
+
                             st.session_state.messages.append(
                                 {"role": "assistant", "content": closing_message}
                             )
@@ -426,9 +545,6 @@ if st.session_state.interview_active:
 
                     # If no closing code was found in message, proceed as normal
 
-                    # Transform WAV base64 string to bytes
-                    audio_bytes = base64.b64decode(interviewer_message_audio_api)
-
                     # Determine duration of WAV
                     interviewer_message_duration = get_wav_duration(audio_bytes)
 
@@ -441,13 +557,21 @@ if st.session_state.interview_active:
                     message_placeholder.markdown(interviewer_message_transcript)
 
                     # Append interviewer’s message
-                    st.session_state.messages.append(
-                        {
-                            "role": "assistant",
-                            "content": interviewer_message_transcript,
-                            "audio": {"id": interviewer_message_id},
-                        }
-                    )
+                    if config.API == "openai":
+                        st.session_state.messages.append(
+                            {
+                                "role": "assistant",
+                                "content": interviewer_message_transcript,
+                                "audio": {"id": interviewer_message_id},
+                            }
+                        )
+                    if config.API == "mistral":
+                        st.session_state.messages.append(
+                            {
+                                "role": "assistant",
+                                "content": interviewer_message_transcript,
+                            }
+                        )
 
                     # Attempt a backup save but continue interview if writing fails
                     try:

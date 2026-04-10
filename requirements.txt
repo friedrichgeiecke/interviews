@@ -4,3 +4,4 @@ anthropic==0.78.0
 google-genai==1.62.0
 azure-ai-inference==1.0.0b9
 scipy==1.17.0
+mistralai ==2.3.1

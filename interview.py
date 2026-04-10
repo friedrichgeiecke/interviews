@@ -11,6 +11,7 @@ from copy import deepcopy
 
 import streamlit as st
 from openai import OpenAI
+from mistralai.client import Mistral
 
 import config
 from utils import (
@@ -179,6 +180,10 @@ elif config.API == "azure":
     )
     api_kwargs["stream"] = True
 
+elif config.API == "mistral":
+    client = Mistral(api_key=st.secrets["KEY_MISTRAL"])
+    api_kwargs["stream"] = True
+
 else:
     raise ValueError(f"Unknown API: {config.API}")
 
@@ -188,9 +193,14 @@ if config.INPUT_MODE not in ["text", "voice", "text_and_voice"]:
         "Please set INPUT_MODE to 'text', 'voice', or 'text_and_voice' in config.py."
     )
 if "voice" in config.INPUT_MODE:
-    client_audio = OpenAI(
-        api_key=st.secrets["KEY_OPENAI"],
-    )
+    if config.API == "openai":
+        client_audio = OpenAI(
+            api_key=st.secrets["KEY_OPENAI"],
+        )
+    elif config.API == "mistral":
+        client_audio = Mistral(
+            api_key=st.secrets["KEY_MISTRAL"],
+        )
 
 
 #
@@ -264,6 +274,12 @@ if st.session_state.interview_active:
                 config.VOICE_INPUT_INSTRUCTIONS,
                 key=st.session_state.voice_input_key,
             )
+            if config.API == "mistral" and voice_response is not None:
+                voice_response={
+                    "content": voice_response.getvalue(),
+                    "file_name": voice_response.name,
+                }
+
         else:
             voice_response = None
 
@@ -295,13 +311,17 @@ if st.session_state.interview_active:
                     response_transcription_placeholder.markdown(
                         "_Processing voice input ..._"
                     )
-
-                    st.session_state.response_transcription = (
-                        client_audio.audio.transcriptions.create(
-                            model=config.MODEL_TRANSCRIPTION,
-                            file=voice_response,
-                        ).text
-                    )
+                    if config.API == "openai":
+                        transcription_text = client_audio.audio.transcriptions.create(
+                                model=config.MODEL_TRANSCRIPTION,
+                                file=voice_response,
+                            ).text
+                    elif config.API == "mistral":
+                        transcription_text =client_audio.audio.transcriptions.complete(
+                                    model=config.MODEL_TRANSCRIPTION,
+                                    file=voice_response,
+                                ).text
+                    st.session_state.response_transcription = (transcription_text)
 
                     response_transcription_placeholder.markdown(
                         st.session_state.response_transcription

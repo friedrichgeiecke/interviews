@@ -208,6 +208,11 @@ def add_messages_to_api_kwargs(api, client_kwargs):
         client_kwargs_transformed["messages"].insert(
             0, {"role": "user", "content": "Hello"}
         )
+    # For Mistral same as Azure
+    elif api == "mistral":
+        client_kwargs_transformed["messages"].insert(
+            0, {"role": "system", "content": config.SYSTEM_PROMPT}
+        )
 
     else:
         raise ValueError(f"Unknown API: {api}")
@@ -276,6 +281,14 @@ def iter_text_deltas(client, client_kwargs):
                 delta = update.choices[0].delta.content
                 if delta:
                     yield delta
+
+    elif config.API == "mistral":
+        stream = client.chat.stream(**client_kwargs_transformed)
+        for chunk in stream:
+            delta= chunk.data.choices[0].delta.content
+            if delta:
+                yield delta
+
     else:
         raise ValueError(f"Unknown API: {config.API}")
 
